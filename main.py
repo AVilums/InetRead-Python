@@ -138,10 +138,21 @@ def extract_zip_with_shell(zip_path, extract_path):
         dest_folder = shell.NameSpace(extract_path)
         dest_folder.CopyHere(zip_items, 20)
 
-        # Wait for extraction to complete
-        while True:
-            if dest_folder.Items().Count == zip_items.Count:
-                break
+        # Wait for extraction to complete. Check if the expected file exist after extraction
+        extracted_driver = os.path.join(extract_path, "msedgedriver.exe")
+        if not os.path.exists(extracted_driver):
+            # Try to find the driver in the extracted files (in case of subfolders)
+            found = False
+            for root, files in os.walk(extract_path):
+                for file in files:
+                    if file.lower() == "msedgedriver.exe":
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                logging.warning("msedgedriver.exe not found after extraction.")
+                return False
 
         logging.info("ZIP extraction completed using Shell.Application")
         return True
@@ -223,9 +234,11 @@ def get_edge_version():
 
             for edge_path in edge_paths:
                 if os.path.exists(edge_path):
+                    # Fix: avoid backslash in f-string expression
+                    wmic_path = edge_path.replace('\\', '\\\\').replace('"', '\\"')
+                    wmic_query = f'name="{wmic_path}"'
                     result = subprocess.run(
-                        ['wmic', 'datafile', 'where', f'name="{edge_path.replace("\\", "\\\\")}"', 'get', 'Version',
-                         '/value'],
+                        ['wmic', 'datafile', 'where', wmic_query, 'get', 'Version', '/value'],
                         capture_output=True, text=True)
                     version_match = re.search(r'Version=(.+)', result.stdout)
                     if version_match:
@@ -298,26 +311,14 @@ def get_edge_version():
 def get_edge_driver_path():
     """Get or download Edge driver."""
     try:
-        # First, check if we're running as a PyInstaller executable
-        if getattr(sys, 'frozen', False):
-            # Running as compiled executable
-            base_path = sys._MEIPASS
-        else:
-            # Running as a normal Python script
-            base_path = os.path.dirname(os.path.abspath(__file__))
-
+        # Always use the directory of the script, not the PyInstaller temp dir
+        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
         # Path where we'll store the Edge driver
-        drivers_dir = os.path.join(base_path, "drivers")
-        if not os.path.exists(drivers_dir):
-            os.makedirs(drivers_dir)
-
-        driver_path = os.path.join(drivers_dir, "msedgedriver.exe")
+        driver_path = os.path.join(base_path, "msedgedriver.exe")
 
         # Check if the driver already exists in expected locations
         possible_driver_locations = [
             # Check in the current directory
-            os.path.join(base_path, "msedgedriver.exe"),
-            # Check in the drivers directory
             driver_path,
             # Check in the executable's directory (if different from base_path)
             os.path.join(os.path.dirname(sys.executable), "msedgedriver.exe")
@@ -352,7 +353,7 @@ def get_edge_driver_path():
 
             # Extract using Shell.Application
             logging.info("Extracting Edge driver using Shell.Application.")
-            if not extract_zip_with_shell(zip_path, drivers_dir):
+            if not extract_zip_with_shell(zip_path, base_path):
                 logging.error("Failed to extract Edge driver using Shell.Application.")
                 return None
 
@@ -368,12 +369,11 @@ def get_edge_driver_path():
                 return driver_path
             else:
                 # Look for the driver in extracted files
-                for root, dirs, files in os.walk(drivers_dir):
+                for root, files in os.walk(base_path):
                     for file in files:
                         if file.lower() == "msedgedriver.exe":
                             found_path = os.path.join(root, file)
-                            if os.path.dirname(found_path) != drivers_dir:
-                                # Move to expected location
+                            if os.path.dirname(found_path) != base_path:
                                 shutil.move(found_path, driver_path)
                                 logging.info(f"Moved Edge driver to: {driver_path}")
                             return driver_path if os.path.exists(driver_path) else found_path
